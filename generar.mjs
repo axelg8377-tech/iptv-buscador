@@ -4,6 +4,7 @@
 
 import { readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, basename } from 'node:path'
+import { createHash } from 'node:crypto'
 
 const STREAMS_DIR = process.env.IPTV_STREAMS || 'C:/Users/Usuario/iptv/streams'
 // node generar.mjs --publico: copia para GitHub Pages sin enlaces autenticados.
@@ -51,6 +52,13 @@ for (const c of channels) c.push(categorias[c[1].split('@')[0]] || [])
 
 // Escapar "</" para que el JSON no cierre el <script> antes de tiempo
 const data = JSON.stringify(channels).replace(/<\//g, '<\\/')
+const versionHash = createHash('sha256').update(readFileSync(import.meta.filename)).update(data)
+if (PUBLICO) {
+  for (const asset of ['manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png']) {
+    versionHash.update(readFileSync(join(import.meta.dirname, 'docs', asset)))
+  }
+}
+const version = versionHash.digest('hex').slice(0, 12)
 
 const html = `<!doctype html>
 <html lang="es">
@@ -58,6 +66,15 @@ const html = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Buscador de canales IPTV</title>
+<meta name="iptv-version" content="${version}">
+${PUBLICO ? `<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#1655b8">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="IPTV">` : ''}
 <script>try { document.documentElement.dataset.theme = localStorage.getItem('iptv-tema') === 'dark' ? 'dark' : 'light'; } catch {}</script>
 <style>
   /* Hallmark · genre: modern-minimal · macrostructure: Workbench · tone: claro · anchor hue: azul
@@ -100,6 +117,11 @@ const html = `<!doctype html>
   #tema { margin-left:8px; flex-shrink:0; }
   #favoritos[aria-pressed="true"] { color:var(--accent); background:var(--tint); border-color:var(--accent); }
   .storage-note { margin:0; color:var(--muted); font-size:12px; }
+  .install-guide { width:min(440px,calc(100% - 40px)); padding:24px; border:1px solid var(--line); border-radius:var(--radius); background:var(--card); color:var(--fg); }
+  .install-guide h2 { margin-top:0; font:600 22px var(--font-display); }
+  .install-guide p { font-size:14px; }
+  .install-guide button { padding:8px 20px; }
+  [hidden] { display:none !important; }
   .channel { display:flex; align-items:stretch; background:var(--card); border:1px solid var(--line); border-bottom:0; }
   .channel:first-of-type { border-radius:var(--radius) var(--radius) 0 0; }
   .channel:last-of-type { border-bottom:1px solid var(--line); border-radius:0 0 var(--radius) var(--radius); }
@@ -194,7 +216,7 @@ const html = `<!doctype html>
       <select id="pais" aria-label="Filtrar por país"><option value="">Todos los países</option></select>
       <select id="categoria" aria-label="Filtrar por categoría"><option value="">Todas las categorías</option></select>
     </div>
-    <div class="filter-bar"><button id="favoritos" aria-pressed="false">Mis favoritos (0)</button><button id="limpiar">Limpiar filtros</button><p class="storage-note" id="guardado" role="status">Favoritos guardados en este dispositivo.</p></div>
+    <div class="filter-bar"><button id="favoritos" aria-pressed="false">Mis favoritos (0)</button><button id="limpiar">Limpiar filtros</button>${PUBLICO ? '<button id="instalar">Instalar app</button><button id="actualizar">Buscar actualizaciones</button><span class="storage-note" id="actualizacion" role="status"></span>' : ''}<p class="storage-note" id="guardado" role="status">Favoritos guardados en este dispositivo.</p></div>
   </div>
 </header>
 <main>
@@ -213,6 +235,14 @@ const html = `<!doctype html>
     <p class="playback-help"><strong>¿El canal no reproduce?</strong>Puede estar caído, bloqueado por región o necesitar otro reproductor. Copiá la URL y abrila en VLC desde Medios › Abrir ubicación de red.</p>
   </div>
 </main>
+${PUBLICO ? `<dialog id="instalacion" class="install-guide" aria-labelledby="titulo-instalacion">
+  <h2 id="titulo-instalacion">Instalar Buscador IPTV</h2>
+  <p><strong>iPhone o iPad:</strong> abrí este enlace en Safari, tocá Compartir y elegí Agregar a inicio. Si aparece, activá Abrir como app.</p>
+  <p><strong>Android:</strong> abrí el enlace en Chrome y elegí Instalar app o Agregar a pantalla principal en el menú ⋮.</p>
+  <p><strong>PC:</strong> abrí el enlace en Chrome o Edge y buscá Instalar esta página como una aplicación en el menú del navegador o el ícono de instalación de la barra de direcciones.</p>
+  <p class="muted">Si abriste el enlace dentro de otra app, primero elegí abrirlo en el navegador. Las transmisiones requieren Internet.</p>
+  <form method="dialog"><button>Cerrar</button></form>
+</dialog>` : ''}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js" integrity="sha384-w6Gb3fXHb5e1LUYa/hYA5Q41bEDglN5ZPCG7Jvnoo8/X90oGnlPqBlBJCe38mEMm" crossorigin="anonymous"></script>
 <script>
@@ -220,6 +250,46 @@ const CANALES = ${data};
 const LIMITE = 200;
 const $ = id => document.getElementById(id);
 const lista = $('lista'), video = $('video'), info = $('info');
+let solicitudInstalacion = null;
+if ($('instalar')) {
+  const modoApp = window.matchMedia('(display-mode: standalone)');
+  const actualizarInstalacion = () => { $('instalar').hidden = modoApp.matches || navigator.standalone === true; };
+  actualizarInstalacion();
+  modoApp.addEventListener('change', actualizarInstalacion);
+  window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); solicitudInstalacion = e; });
+  window.addEventListener('appinstalled', () => { solicitudInstalacion = null; $('instalar').hidden = true; });
+  $('instalar').onclick = async () => {
+    if (!solicitudInstalacion) { $('instalacion').showModal(); return; }
+    const solicitud = solicitudInstalacion; solicitudInstalacion = null;
+    try { await solicitud.prompt(); await solicitud.userChoice; }
+    catch { $('instalacion').showModal(); }
+  };
+  let nuevaVersion = null;
+  $('actualizar').onclick = async () => {
+    const boton = $('actualizar'), estado = $('actualizacion');
+    if (nuevaVersion) {
+      const destino = new URL('index.html', location.href);
+      destino.searchParams.set('v', nuevaVersion);
+      location.assign(destino.href);
+      return;
+    }
+    boton.disabled = true; estado.textContent = 'Buscando una versión nueva…';
+    try {
+      const respuesta = await fetch(new URL('index.html', location.href), { cache:'no-store' });
+      if (!respuesta.ok) throw new Error('No disponible');
+      const documento = new DOMParser().parseFromString(await respuesta.text(), 'text/html');
+      const version = documento.querySelector('meta[name="iptv-version"]')?.content;
+      if (!version || !/^[a-f0-9]{12}$/.test(version)) throw new Error('Versión no válida');
+      if (version === document.querySelector('meta[name="iptv-version"]').content) {
+        estado.textContent = 'Ya tenés la última versión.';
+      } else {
+        nuevaVersion = version; boton.textContent = 'Actualizar ahora';
+        estado.textContent = 'Hay una versión nueva. Tus favoritos se conservan.';
+      }
+    } catch { estado.textContent = 'No se pudo comprobar. Revisá tu conexión y reintentá.'; }
+    finally { boton.disabled = false; }
+  };
+}
 let actual = null, mostrados = [], cupo = LIMITE, hls = null;
 let soloFavoritos = false;
 let favoritos = new Set();
